@@ -7,13 +7,23 @@
 #define CHANNELS 2
 #define SAMPLE_RATE 48000
 
+// oh boy a struct
+typedef struct {
+    ma_noise noise;
+    ma_lpf lpf;
+} AudioData;
+
 void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
 {
 
-    ma_noise* pNoise = (ma_noise*)pDevice->pUserData;
+    AudioData* pAudio = (AudioData*)pDevice->pUserData;
 
-    ma_noise_read_pcm_frames(pNoise, pOutput, frameCount, NULL);
+    // temp buffer to hold generated pink noise
+    float tempBuffer[frameCount * CHANNELS];
 
+    ma_noise_read_pcm_frames(&pAudio->noise, tempBuffer, frameCount, NULL);
+
+    ma_lpf_process_pcm_frames(&pAudio->lpf, pOutput, tempBuffer, frameCount);
 
     // In playback mode copy data to pOutput. In capture mode read data from pInput. In full-duplex mode, both
     // pOutput and pInput will be valid and you can move data from pInput into pOutput. Never process more than
@@ -27,9 +37,9 @@ int main()
     ma_noise_config noiseConfig = ma_noise_config_init(
 	FORMAT,
 	CHANNELS,
-	ma_noise_type_white,
+	ma_noise_type_pink,
 	0,
-	0.2);
+	0.3);
 
     // represents our gen config
     ma_noise noise;
@@ -40,6 +50,33 @@ int main()
 	return 1;
     }
 
+    // create low pass as default pink is still too high
+
+    ma_lpf_config lpfConfig = ma_lpf_config_init(
+	FORMAT,
+	CHANNELS,
+	SAMPLE_RATE,
+	300, //cutoff frequency - change this until ok 
+	4);
+
+    //initialize the low pass filter
+    ma_lpf lpf;
+    
+    if (ma_lpf_init(&lpfConfig, NULL, &lpf) != MA_SUCCESS) {
+	printf("Failed to initialize the low-pass filter :(\n");
+	return 1;
+    }
+
+    // combined noise+filter for callback
+    AudioData audio;
+
+    // put noise gen into AudioData struct
+    audio.noise = noise;
+    // put low-pass filter into AudioData struct
+    audio.lpf = lpf;
+
+//    config.pUserData = &audio;
+
     // create audio device config
 
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
@@ -47,7 +84,7 @@ int main()
     config.playback.channels = CHANNELS;               // Set to 0 to use the device's native channel count.
     config.sampleRate        = SAMPLE_RATE;           // Set to 0 to use the device's native sample rate.
     config.dataCallback      = data_callback;   // This function will be called when miniaudio needs more data.
-    config.pUserData         = &noise;   // Can be accessed from the device object (device.pUserData).
+    config.pUserData         = &audio;   // Can be accessed from the device object (device.pUserData).
 
     // initializes the device
     ma_device device;
@@ -68,11 +105,12 @@ int main()
 	return 1;
     }    
 
-    printf("White noise is playing (hopefully). Enter to stop\n");
+    printf("pink noise is playing (hopefully). Enter to stop\n");
     getchar();
 
     // cleanup and undo started things
     ma_device_uninit(&device);
+    ma_lpf_uninit(&lpf, NULL);
     ma_noise_uninit(&noise, NULL);
     return 0;
 }
