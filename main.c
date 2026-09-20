@@ -1,78 +1,79 @@
-#define MA_NO_DECODING
-#define MA_NO_ENCODING
-#define MINIAUDIO_IMPLEMENTATION
-#include "miniaudio.h"
-
 #include <stdio.h>
+#include "miniaudio.h"
+#include "miniaudio.c"
 
-#include <assert.h>
-
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-
-void main_loop__em()
-{
-}
-#endif
-
-#define DEVICE_FORMAT       ma_format_f32
-#define DEVICE_CHANNELS     2
-#define DEVICE_SAMPLE_RATE  48000
+// setting the variable things so that it's identicle for both gen and device
+#define FORMAT ma_format_f32 
+#define CHANNELS 2
+#define SAMPLE_RATE 48000
 
 void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
 {
-    ma_waveform* pSineWave;
 
-    assert(pDevice->playback.channels == DEVICE_CHANNELS);
+    ma_noise* pNoise = (ma_noise*)pDevice->pUserData;
 
-    pSineWave = (ma_waveform*)pDevice->pUserData;
-    assert(pSineWave != NULL);
+    ma_noise_read_pcm_frames(pNoise, pOutput, frameCount, NULL);
 
-    ma_waveform_read_pcm_frames(pSineWave, pOutput, frameCount, NULL);
 
-    (void)pInput;   /* Unused. */
+    // In playback mode copy data to pOutput. In capture mode read data from pInput. In full-duplex mode, both
+    // pOutput and pInput will be valid and you can move data from pInput into pOutput. Never process more than
+    // frameCount frames.
 }
 
-int main(int argc, char** argv)
+int main()
 {
-    ma_waveform sineWave;
-    ma_device_config deviceConfig;
+    // create noise gen
+    
+    ma_noise_config noiseConfig = ma_noise_config_init(
+	FORMAT,
+	CHANNELS,
+	ma_noise_type_white,
+	0,
+	0.2);
+
+    // represents our gen config
+    ma_noise noise;
+
+    // initializes the gen using config and checks if it worked
+    if (ma_noise_init(&noiseConfig, NULL, &noise) != MA_SUCCESS) {
+	printf("Failed to initialize the noise generator :(\n");
+	return 1;
+    }
+
+    // create audio device config
+
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.playback.format   = FORMAT;   // Set to ma_format_unknown to use the device's native format.
+    config.playback.channels = CHANNELS;               // Set to 0 to use the device's native channel count.
+    config.sampleRate        = SAMPLE_RATE;           // Set to 0 to use the device's native sample rate.
+    config.dataCallback      = data_callback;   // This function will be called when miniaudio needs more data.
+    config.pUserData         = &noise;   // Can be accessed from the device object (device.pUserData).
+
+    // initializes the device
     ma_device device;
-    ma_waveform_config sineWaveConfig;
-
-    deviceConfig = ma_device_config_init(ma_device_type_playback);
-    deviceConfig.playback.format   = DEVICE_FORMAT;
-    deviceConfig.playback.channels = DEVICE_CHANNELS;
-    deviceConfig.sampleRate        = DEVICE_SAMPLE_RATE;
-    deviceConfig.dataCallback      = data_callback;
-    deviceConfig.pUserData         = &sineWave;
-
-    if (ma_device_init(NULL, &deviceConfig, &device) != MA_SUCCESS) {
-        printf("Failed to open playback device.\n");
-        return -4;
-    }
-
-    printf("Device Name: %s\n", device.playback.name);
-
-    sineWaveConfig = ma_waveform_config_init(device.playback.format, device.playback.channels, device.sampleRate, ma_waveform_type_sine, 0.2, 220);
-    ma_waveform_init(&sineWaveConfig, &sineWave);
-
-    if (ma_device_start(&device) != MA_SUCCESS) {
-        printf("Failed to start playback device.\n");
-        ma_device_uninit(&device);
-        return -5;
-    }
     
-#ifdef __EMSCRIPTEN__
-    emscripten_set_main_loop(main_loop__em, 0, 1);
-#else
-    printf("Press Enter to quit...\n");
+    // null means miniaudio chooses the default audio backend (im pretty sure thats like pulseaudio)
+    if (ma_device_init(NULL, &config, &device) != MA_SUCCESS) {
+	printf("Failed to initialize audio device :(\n");
+        return -1;  // Failed to initialize the device.
+    }
+
+     // The device is sleeping by default so you'll need to start it manually.
+
+    if (ma_device_start(&device) != MA_SUCCESS){
+	printf("Failed to start audio device :(\n");
+	// other things were already initialized so undo that to clean it up
+	ma_device_uninit(&device);
+	ma_noise_uninit(&noise, NULL);
+	return 1;
+    }    
+
+    printf("White noise is playing (hopefully). Enter to stop\n");
     getchar();
-#endif
-    
+
+    // cleanup and undo started things
     ma_device_uninit(&device);
-    
-    (void)argc;
-    (void)argv;
+    ma_noise_uninit(&noise, NULL);
     return 0;
 }
+
